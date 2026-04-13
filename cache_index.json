@@ -1,0 +1,14 @@
+{
+  "c2828aaf0c65e5c2": {
+    "pdf_path": "test_pdf.pdf",
+    "config_hash": "test_config_hash",
+    "result": {
+      "data": "test"
+    },
+    "created_at": "2026-04-13T20:49:09.944854",
+    "accessed_at": "2026-04-13T20:49:09.944854",
+    "access_count": 2,
+    "file_hash": null,
+    "size_bytes": 16
+  }
+}

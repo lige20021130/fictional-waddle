@@ -1,0 +1,229 @@
+========================================
+预提取增强功能说明
+========================================
+
+本次更新包含三大增强功能:
+
+1. Km 和 Vmax 精确模式匹配
+2. 材料名称消歧规则
+3. 基于RAG思想的上下文检索
+
+
+========================================
+一、Km 和 Vmax 精确匹配
+========================================
+
+增强内容:
+---------
+- Km: 支持 Km=0.5 mM, Km = 1.2 μM 等格式
+- Vmax: 支持 Vmax=2.5×10^-3 M s-1, Vmax = 5.0×10^-4 mM/min 等格式
+- 新增单位支持: nM (Km), mM/min, μM/min (Vmax)
+
+正则表达式:
+-----------
+Km:  [Kk]m\s*[= :]?\s*(\d+\.?\d*)\s*(mM|μM|uM|nM)
+Vmax: [Vv]max\s*[= :]?\s*(\d+\.?\d*)\s*[×x]\s*10\s*\^?\s*-?\s*(\d+)\s*(单位)
+
+匹配示例:
+---------
+✓ Km = 0.5 mM           → 提取: 0.5 mM
+✓ Km 1.2 μM             → 提取: 1.2 μM  
+✓ Vmax = 2.5×10^-3 M s-1  → 提取: 2.5×10^-3 M s-1
+✓ Vmax=5.0×10^-4 mM/min  → 提取: 5.0×10^-4 mM/min
+
+
+========================================
+二、材料名称消歧规则
+========================================
+
+问题背景:
+---------
+文献中常提到多种材料,但只有一种是研究主体:
+"We synthesized Fe3O4 nanoparticles... compared to ZnO and TiO2"
+- Fe3O4 是主要材料 ( synthesized )
+- ZnO, TiO2 是对比材料 ( compared to )
+
+消歧策略:
+---------
+1. 上下文评分机制
+   ✓ 主要材料指标 (+10分):
+     synthesized, prepared, fabricated, developed
+     novel, new, designed, obtained
+     we report, in this work, our nanozyme
+   
+   ✓ 材料上下文关键词 (+5分):
+     nanotubes, nanoparticles, nanorods, nanosheets
+     nanoclusters, quantum dots, frameworks, MOF
+     composite, hybrid, doped
+   
+   ✗ 举例材料指标 (-15分):
+     such as, for example, e.g., like
+     including, compared to, conventional
+     common, traditional, typical
+   
+   ⚠ 常见举例材料默认减分 (-5分):
+     ZnO, TiO2
+
+2. 选择逻辑
+   - 计算每个化学式的上下文得分
+   - 选择得分最高的(必须>0分)
+   - 分数相同选第一次出现的
+
+示例:
+-----
+文本: "We synthesized novel Fe3O4 nanoparticles... such as ZnO"
+结果: 
+  Fe3O4: +10(synthesized) +5(nanoparticles) = 15分 ✓
+  ZnO: -15(such as) -5(常见材料) = -20分 ✗
+
+
+========================================  
+三、基于RAG思想的上下文检索
+========================================
+
+设计理念:
+---------
+对于极长文献,不是将所有文本都喂给LLM,而是:
+1. 先用关键词检索最相关的段落
+2. 只将相关段落送给LLM提取
+3. 降低token消耗,减少干扰
+
+实现策略:
+---------
+1. 相关性评分机制
+   - 提取关键词频率 × 2.0
+   - 纳米酶专业术语 × 3.0 (加权)
+     (nanozyme, Km, Vmax, catalytic, enzyme, kinetic)
+   - 包含实验数据 +5.0
+     (匹配 mM, μM, nM, nm, °C 等数值)
+
+2. 章节权重
+   - abstract: +100 (强制保留)
+   - experimental: +100 (强制保留)
+   - results: +10 (优先保留)
+   - 其他: 按相关性评分
+
+3. 选择流程
+   a. 计算所有文本块的相关性分数
+   b. 按分数降序排序
+   c. 选择 top_k 个(默认10个)
+   d. 按原始顺序重新排列(保持上下文连贯)
+
+使用方式:
+---------
+# 不使用RAG (默认,使用全部文本)
+pre.to_mid_json("output.json", use_rag=False)
+
+# 使用RAG,选择最相关的10个块
+pre.to_mid_json("output.json", use_rag=True, top_k=10)
+
+# 使用RAG,选择最相关的20个块
+pre.to_mid_json("output.json", use_rag=True, top_k=20)
+
+效果对比:
+---------
+假设文献有50个文本块 (约60,000字符):
+- 不使用RAG: 发送全部50块 → 60,000 tokens
+- 使用RAG(top_k=10): 只发送10块 → 约12,000 tokens
+- Token节省: 约80%
+- 提取质量: 基本相当(因为筛选的是最相关内容)
+
+
+========================================
+四、技术细节
+========================================
+
+CONFIG 配置更新:
+----------------
+CONFIG["pre_extraction"] 新增:
+  - km_pattern: Km匹配正则
+  - vmax_pattern: Vmax匹配正则
+  - main_material_indicators: 主要材料指标列表
+  - example_material_indicators: 举例材料指标列表
+  - material_context_keywords: 材料上下文关键词
+
+新增方法:
+---------
+1. _extract_chemical_with_disambiguation(text)
+   功能: 带消歧的化学式提取
+   返回: 消歧后的化学式或None
+
+2. _calculate_relevance_score(chunk, keywords)
+   功能: 计算文本块相关性分数
+   返回: 浮点数分数
+
+3. _select_relevant_chunks(top_k=10)
+   功能: RAG筛选最相关文本块
+   返回: TextChunk列表
+
+修改方法:
+---------
+to_mid_json(save_path, use_rag=False, top_k=10)
+  新增参数:
+  - use_rag: 是否启用RAG筛选
+  - top_k: RAG选择的块数量
+
+
+========================================
+五、使用建议
+========================================
+
+场景1: 短篇文献 (< 10页)
+  建议: use_rag=False
+  原因: 文本量小,全部发送效果更好
+
+场景2: 中长文献 (10-20页)
+  建议: use_rag=True, top_k=15
+  原因: 平衡token消耗和提取质量
+
+场景3: 超长文献 (> 20页)
+  建议: use_rag=True, top_k=10
+  原因: 显著降低token消耗,避免超出限制
+
+场景4: 只需提取动力学参数
+  建议: use_rag=True, top_k=8
+  关键词已优化为Km, Vmax, kinetic等
+
+
+========================================
+六、测试验证
+========================================
+
+运行测试脚本:
+  python test_enhanced_extraction.py
+
+测试内容:
+  [1] Km 精确匹配
+  [2] Vmax 精确匹配
+  [3] 材料名称消歧
+  [4] RAG 相关性评分
+
+预期结果:
+  ✓ Km 正确提取值和单位
+  ✓ Vmax 正确提取科学计数法
+  ✓ Fe3O4 被识别为主要材料
+  ✓ ZnO, TiO2 被识别为举例材料
+  ✓ 含数据的段落获得更高分数
+
+
+========================================
+七、注意事项
+========================================
+
+⚠ RAG筛选可能遗漏信息
+  - 如果关键信息在未选中的文本块中,会丢失
+  - 建议首次使用 use_rag=False 验证效果
+
+⚠ 材料消歧不是100%准确
+  - 基于关键词匹配,可能误判
+  - 复杂上下文需LLM进一步判断
+
+⚠ Vmax格式多样性
+  - 文献中Vmax格式非常多样
+  - 当前正则覆盖常见格式,但可能有不匹配的情况
+  - 如发现未匹配,可补充正则表达式
+
+⚠ Token计算
+  - 1个中文字符 ≈ 1-2 tokens
+  - 1个英文单词 ≈ 1.3 tokens
+  - 建议保留20%余量

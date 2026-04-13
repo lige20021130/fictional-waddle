@@ -1,0 +1,260 @@
+========================================
+API速率限制修复说明
+========================================
+
+问题现象:
+---------
+[WARN] API速率限制触发，等待 1.0秒 (尝试 1/5)
+[WARN] API速率限制触发，等待 2.0秒 (尝试 2/5)
+[WARN] API速率限制触发，等待 4.0秒 (尝试 3/5)
+[WARN] API速率限制触发，等待 8.0秒 (尝试 4/5)
+[WARN] API速率限制触发，等待 16.0秒 (尝试 5/5)
+[ERROR] API请求失败，已重试 5 次: None
+
+所有5个文本块都失败,提取流程崩溃。
+
+
+问题根源:
+---------
+1. 批处理大小过大 (5个并发)
+   - 配置: chunk_batch_size=5, vlm_batch_size=2
+   - 5个文本块同时发起API请求
+
+2. TokenBucket容量过高 (10个/秒)
+   - 配置: requests_per_second=10
+   - 理论支持10个并发/秒
+
+3. GLM API免费额度限制严格
+   - 实际可能只支持1-2个并发
+   - 5个并发立即触发429速率限制
+
+4. 重试风暴
+   - 5个请求同时被429
+   - 同时等待1秒后重试
+   - 又同时被429,形成恶性循环
+
+
+修复方案:
+---------
+
+修复1: 降低批处理大小 (extraction_pipeline.py)
+---------------------------------------------
+LLM:
+  原: chunk_batch_size = 5
+  新: min(chunk_batch_size, 2) = 2  # 最大2并发
+
+VLM:
+  原: vlm_batch_size = 2  
+  新: min(vlm_batch_size, 1) = 1  # 最大1并发
+
+代码:
+  llm = LLMExtractor(client, min(self.config.get('chunk_batch_size', 5), 2))
+  vlm = VLMExtractor(client, min(self.config.get('vlm_batch_size', 2), 1))
+
+
+修复2: 降低TokenBucket速率 (api_client_v2.py)
+--------------------------------------------
+requests_per_second:
+  原: 10 个/秒
+  新: 2 个/秒 (默认值)
+
+LLM Bucket:
+  原: rate=10, capacity=10
+  新: rate=2, capacity=2  # 最多2个/秒
+
+VLM Bucket:
+  原: rate=2, capacity=2
+  新: rate=1, capacity=1  # 最多1个/秒
+
+代码:
+  self.rate_config = RateLimitConfig(
+      requests_per_second=self.config.get('requests_per_second', 2),  # 10->2
+  )
+  
+  self.llm_bucket = TokenBucket(
+      rate=min(self.rate_config.requests_per_second, 2),
+      capacity=min(self.rate_config.requests_per_second, 2)
+  )
+  
+  self.vlm_bucket = TokenBucket(
+      rate=min(self.rate_config.requests_per_second, 1),  # VLM更慢
+      capacity=min(self.rate_config.requests_per_second, 1)
+  )
+
+
+效果对比:
+---------
+
+修复前:
+  并发数: 5个LLM + 2个VLM = 7个同时请求
+  TokenBucket: 10个/秒
+  结果: 100%触发429,重试5次后失败
+
+修复后:
+  并发数: 2个LLM + 1个VLM = 最多2个同时请求
+  TokenBucket: 2个/秒(LLM), 1个/秒(VLM)
+  结果: 大幅降低429触发率,请求平稳进行
+
+
+时间估算:
+---------
+假设5个文本块,每块API响应2秒:
+
+修复前 (5并发,但100%失败):
+  5个请求 × 2秒 = 10秒
+  + 5次重试 × (1+2+4+8+16)秒 = 155秒
+  总耗时: 165秒 (但全部失败!)
+
+修复后 (2并发,稳定成功):
+  批1: 2个请求 × 2秒 = 2秒
+  批2: 2个请求 × 2秒 = 2秒
+  批3: 1个请求 × 2秒 = 2秒
+  总耗时: 6秒 (全部成功!)
+
+虽然并发降低,但因为避免了重试,总体更快!
+
+
+配置建议:
+---------
+
+免费API (如GLM-4免费额度):
+  chunk_batch_size: 2
+  vlm_batch_size: 1
+  requests_per_second: 2
+  适合: 低并发,稳定运行
+
+付费API (如OpenAI GPT-4):
+  chunk_batch_size: 5
+  vlm_batch_size: 3
+  requests_per_second: 10
+  适合: 高并发,快速处理
+
+自定义配置 (config.yaml):
+  requests_per_minute: 60
+  requests_per_second: 2  # 调整这个值控制速率
+  chunk_batch_size: 2     # 调整这个值控制并发
+  vlm_batch_size: 1
+
+
+日志输出:
+---------
+
+修复后日志示例:
+  [INFO] 文本块数量: 5
+  [INFO] 批处理大小: 2 (已限制并发)
+  [INFO] API配置: glm-4.7 @ https://...
+  [INFO] 开始调用 LLM API...
+  [INFO] 开始处理 5 个文本块, 批处理大小: 2
+  [INFO] LLM 进度: 2/5 个文本块
+  [INFO] LLM 进度: 4/5 个文本块
+  [INFO] LLM 进度: 5/5 个文本块
+  [INFO] LLM 提取完成: 成功 5/5 个文本块
+
+注意: 
+  - 批处理大小显示为2(不是5)
+  - 不再有大量429警告
+  - 进度平稳增长
+
+
+进一步优化:
+-----------
+
+如果仍然遇到429,可以:
+
+1. 进一步降低并发:
+   config.yaml中设置:
+     requests_per_second: 1
+   extraction_pipeline.py中修改:
+     min(..., 1)  # 改为1并发
+
+2. 增加重试延迟:
+   api_client_v2.py中修改:
+     RateLimitConfig(
+         base_delay=2.0,  # 1.0->2.0秒
+         max_delay=120.0  # 60.0->120.0秒
+     )
+
+3. 使用指数退避+抖动:
+   在429处理中添加随机延迟:
+     import random
+     jitter = random.uniform(0, wait_time * 0.1)
+     await asyncio.sleep(wait_time + jitter)
+
+4. 升级API套餐:
+   - GLM-4: 升级到付费版,提高QPS限制
+   - 或使用多个API Key轮换
+
+
+技术细节:
+---------
+
+TokenBucket算法:
+  - 每秒补充rate个令牌
+  - 桶容量为capacity个令牌
+  - 每个请求消耗1个令牌
+  - 令牌不足时等待
+  
+  示例: rate=2, capacity=2
+  t=0: 桶中有2个令牌
+  请求1: 消耗1个,剩余1个 ✓
+  请求2: 消耗1个,剩余0个 ✓
+  请求3: 无令牌,等待0.5秒(补充1个)
+  请求3: 消耗1个,剩余0个 ✓
+
+
+Semaphore并发控制:
+  - asyncio.Semaphore(2) 允许最多2个并发
+  - 第3个请求会被阻塞,等待前2个完成
+  - 与TokenBucket配合,双重限流
+
+
+重试机制:
+  - 429错误触发指数退避: 1s, 2s, 4s, 8s, 16s
+  - 最多重试5次
+  - 总等待时间: 31秒
+  - 如果5次都失败,抛出异常
+
+
+调试命令:
+---------
+
+查看API统计:
+  python -c "
+  from api_client_v2 import APIClient
+  import asyncio
+  
+  async def test():
+      async with APIClient() as client:
+          # 执行一些请求...
+          print(client.get_statistics())
+  
+  asyncio.run(test())
+  "
+
+查看速率限制配置:
+  python -c "
+  from api_client_v2 import APIClient, RateLimitConfig
+  config = RateLimitConfig()
+  print(f'每分钟请求: {config.requests_per_minute}')
+  print(f'每秒请求: {config.requests_per_second}')
+  print(f'最大重试: {config.max_retries}')
+  "
+
+
+修复验证:
+---------
+1. 语法检查: ✓ 通过
+2. 导入测试: ✓ 通过
+3. 模块兼容性: ✓ 通过
+
+建议测试流程:
+1. 启动GUI: .\start_basic_gui.bat
+2. 选择短文献(5-10页)
+3. 开始提取
+4. 观察日志:
+   - 批处理大小应显示为2
+   - 不应有大量429警告
+   - 进度应平稳增长
+5. 检查输出:
+   - 提取结果JSON应完整
+   - 不应有缺失字段

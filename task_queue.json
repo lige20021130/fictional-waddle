@@ -1,0 +1,39 @@
+{
+  "tasks": [
+    {
+      "id": "task_705d9549ba03",
+      "pdf_path": "test.pdf",
+      "mid_json_path": "test.json",
+      "status": "pending",
+      "priority": 2,
+      "created_at": "2026-04-13T20:48:51.593307",
+      "updated_at": "2026-04-13T20:48:51.593307",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "retry_count": 0,
+      "max_retries": 3,
+      "result_path": null,
+      "progress": 0.0,
+      "metadata": {}
+    },
+    {
+      "id": "task_13ae16f32c98",
+      "pdf_path": "test.pdf",
+      "mid_json_path": "test.json",
+      "status": "pending",
+      "priority": 2,
+      "created_at": "2026-04-13T20:49:09.948184",
+      "updated_at": "2026-04-13T20:49:09.948184",
+      "started_at": null,
+      "completed_at": null,
+      "error": null,
+      "retry_count": 0,
+      "max_retries": 3,
+      "result_path": null,
+      "progress": 0.0,
+      "metadata": {}
+    }
+  ],
+  "saved_at": "2026-04-13T20:49:09.948184"
+}

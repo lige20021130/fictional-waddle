@@ -1,0 +1,94 @@
+# ========== 纳米酶文献提取系统 - 配置 ==========
+# 版本: 2.0
+# 更新: 2024-01-01
+
+# ==================== LLM 配置 ====================
+# 文本提取使用的语言模型
+text_llm:
+  base_url: "https://open.bigmodel.cn/api/paas/v4/"
+  api_key: "48bd889040b3486eb783e5dbe9e14ac7.58rD15t9flQLfEdf"
+  model: "glm-4.7"
+  max_retries: 5           # 最大重试次数
+  timeout: 120             # 请求超时(秒)
+
+# ==================== VLM 配置 ====================
+# 图像分析使用的视觉语言模型
+vision_vlm:
+  base_url: "https://api-inference.modelscope.cn/v1"
+  api_key: "ms-8c261e33-6227-4931-8624-09881304890f"
+  model: "moonshotai/Kimi-K2.5"
+  max_retries: 5
+  timeout: 180             # VLM超时更长
+
+# ==================== 速率限制配置 ====================
+# 控制API调用频率，避免429错误
+rate_limit:
+  requests_per_minute: 60    # 每分钟最大请求数
+  requests_per_second: 10    # 每秒最大请求数
+  base_delay: 1.0           # 基础延迟(秒)
+  max_delay: 60.0           # 最大延迟(秒)
+  retry_on_429: true        # 遇到429是否自动重试
+  respect_retry_after: true # 是否遵守服务器返回的Retry-After
+
+# ==================== 提取参数 ====================
+temperature: 0.1            # 生成温度(越低越确定)
+text_max_tokens: 4096       # 文本生成最大token数
+vision_max_tokens: 2048     # 图像分析最大token数
+
+# ==================== 批处理配置 ====================
+chunk_batch_size: 5          # LLM文本块并发数(根据API限制调整)
+vlm_batch_size: 2           # VLM图像并发数
+
+# ==================== 置信度配置 ====================
+confidence_threshold: 0.7   # 低于此置信度的字段标记为需要审核
+
+# ==================== 输出配置 ====================
+results_dir: "./extraction_results"    # 提取结果输出目录
+rulebook_path: "./rulebook.json"        # 规则库路径
+
+# ==================== 缓存配置 ====================
+cache:
+  enabled: true                           # 是否启用缓存
+  dir: "./cache"                         # 缓存目录
+  max_age_days: 7                        # 缓存最大保存天数
+  max_size_mb: 500                      # 缓存最大占用空间(MB)
+
+# ==================== 任务队列配置 ====================
+queue:
+  enabled: true                          # 是否启用任务队列
+  path: "./task_queue.json"              # 队列文件路径
+  max_retries: 3                         # 任务最大重试次数
+  timeout: 3600                          # 任务超时时间(秒)
+
+# ==================== 字段定义 ====================
+# 可扩展的字段定义(预留)
+field_definitions:
+  - name: material
+    type: string
+    required: true
+    description: "纳米酶材料名称"
+  - name: metal_center
+    type: string
+    description: "金属中心"
+  - name: enzyme_type
+    type: string
+    required: true
+    description: "酶活性类型"
+  - name: Km
+    type: float
+    unit: "mM"
+    description: "米氏常数"
+  - name: Vmax
+    type: float
+    unit: "mM/s"
+    description: "最大反应速率"
+  - name: pH_opt
+    type: float
+    description: "最适pH"
+  - name: T_opt
+    type: float
+    unit: "°C"
+    description: "最适温度"
+  - name: characterization
+    type: list
+    description: "表征方法"
